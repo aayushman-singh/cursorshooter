@@ -53,6 +53,7 @@
 
     <div id="killfeed"></div>
     <div id="center-message" class="hidden"></div>
+    <div id="room-indicator" class="hidden"></div>
     <div id="gamepad-indicator" class="hidden">Controller connected</div>
   </div>
 
@@ -74,6 +75,8 @@
       <p id="menu-tagline">A Cursor hackathon FPS</p>
       <p id="menu-subtitle"></p>
       <input id="menu-name" class="hidden" type="text" maxlength="12" placeholder="Enter your callsign" autocomplete="off" spellcheck="false">
+      <input id="menu-room" class="hidden" type="text" maxlength="8" placeholder="ROOM CODE (EMPTY = PUBLIC LOBBY)" autocomplete="off" spellcheck="false">
+      <label id="menu-bots-wrap" class="hidden"><input type="checkbox" id="menu-bots" checked> FILL WITH BOTS <span id="menu-bots-hint">only when creating a new room</span></label>
       <div id="menu-buttons"></div>
       <p id="menu-error" class="hidden"></p>
       <p id="menu-hint"></p>

@@ -17,6 +17,19 @@ export function teamToProtocol(t) {
   return t === 'B' ? 'red' : 'blue';
 }
 
+/** Normalize a room code: uppercase [A-Z0-9], max 8 chars ('' = public lobby). */
+export function sanitizeRoom(code) {
+  return String(code || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 8);
+}
+
+/** ?room=CODE query param, sanitized ('' when absent/invalid). */
+export function roomFromQuery() {
+  return sanitizeRoom(new URLSearchParams(location.search).get('room'));
+}
+
 export class NetClient {
   constructor() {
     /** @type {WebSocket|null} */
@@ -24,6 +37,8 @@ export class NetClient {
     this.id = null;
     this.team = null;      // protocol team: 'blue' | 'red'
     this.host = false;     // true when this client simulates the bots
+    this.room = 'LOBBY';   // normalized room id from welcome
+    this.bots = true;      // the room's actual bot setting from welcome
     /** @type {Map<string, { id: string, name: string, team: string }>} roster */
     this.players = new Map();
     this.score = { blue: 0, red: 0 };
@@ -60,13 +75,18 @@ export class NetClient {
   }
 
   /**
-   * Connect, send {t:'join', name}, and resolve with the welcome message.
-   * Rejects on socket error, close-before-welcome, or timeout.
+   * Connect, send {t:'join', name, room?, bots}, and resolve with the welcome
+   * message. Rejects on socket error, close-before-welcome, or timeout.
    * @param {string} name
-   * @param {number} [timeoutMs]
+   * @param {{ room?: string, bots?: boolean, timeoutMs?: number }} [opts]
+   *   room: ''/missing = public lobby; bots: the creator's bot-fill choice
+   *   (only sticks when creating the room — trust welcome.bots instead).
    * @returns {Promise<object>} the welcome message
    */
-  connect(name, timeoutMs = 8000) {
+  connect(name, opts = {}) {
+    const room = sanitizeRoom(opts.room);
+    const bots = opts.bots !== false;
+    const timeoutMs = opts.timeoutMs || 8000;
     return new Promise((resolve, reject) => {
       let settled = false;
       const timer = setTimeout(() => fail(new Error('connection timed out')), timeoutMs);
@@ -88,7 +108,11 @@ export class NetClient {
       }
       this.ws = ws;
 
-      ws.onopen = () => this.send({ t: 'join', name });
+      ws.onopen = () => {
+        const join = { t: 'join', name, bots };
+        if (room) join.room = room;
+        this.send(join);
+      };
       ws.onerror = () => fail(new Error('connection failed'));
       ws.onclose = () => {
         if (!settled) fail(new Error('connection closed'));
@@ -106,6 +130,8 @@ export class NetClient {
           this.id = msg.id;
           this.team = msg.team;
           this.host = !!msg.host;
+          this.room = msg.room || 'LOBBY';
+          this.bots = msg.bots !== false; // default true when the field is absent
           this.score = msg.score || { blue: 0, red: 0 };
           this.players.clear();
           for (const p of msg.players || []) this.players.set(p.id, p);

@@ -7,6 +7,7 @@
  *
  * Team A = blue/friendly, team B = red/enemy.
  */
+import { sanitizeRoom } from '../net/net.js';
 
 // Killfeed lifecycle (seconds) and capacity. KF_FADE_TIME matches the
 // .kf-entry.kf-fade CSS opacity transition.
@@ -50,8 +51,17 @@ export class HUD {
       menuButtons: $('#menu-buttons'),
       menuHint: $('#menu-hint'),
       menuName: $('#menu-name'),
+      menuRoom: $('#menu-room'),
+      menuBots: $('#menu-bots'),
+      menuBotsWrap: $('#menu-bots-wrap'),
       menuError: $('#menu-error'),
+      roomIndicator: $('#room-indicator'),
     };
+
+    // Keep the room code uppercase [A-Z0-9] while typing.
+    this.el.menuRoom.addEventListener('input', () => {
+      this.el.menuRoom.value = sanitizeRoom(this.el.menuRoom.value);
+    });
 
     /** @type {import('../engine/input.js').InputManager|null} */
     this.input = null;
@@ -253,9 +263,11 @@ export class HUD {
     this._menuVisible = true;
     menu.classList.remove('hidden');
 
-    // The callsign field + error line only belong on the start screen.
+    // The callsign/room/bots fields + error line only belong on the start screen.
     const isStart = screen === 'start';
     this.el.menuName.classList.toggle('hidden', !isStart);
+    this.el.menuRoom.classList.toggle('hidden', !isStart);
+    this.el.menuBotsWrap.classList.toggle('hidden', !isStart);
     this.el.menuError.classList.toggle('hidden', !isStart || !this.el.menuError.textContent);
   }
 
@@ -266,6 +278,42 @@ export class HUD {
   getPlayerName() {
     const raw = this.el.menuName.value.replace(/[^\w \-]/g, '').trim().slice(0, 12);
     return raw || 'Player';
+  }
+
+  /**
+   * Sanitized room code from #menu-room ('' = public lobby).
+   * @returns {string}
+   */
+  getRoomCode() {
+    return sanitizeRoom(this.el.menuRoom.value);
+  }
+
+  /**
+   * Prefill #menu-room (e.g. from the ?room= query param). Sanitized.
+   * @param {string} code
+   */
+  setRoomCode(code) {
+    this.el.menuRoom.value = sanitizeRoom(code);
+  }
+
+  /** @returns {boolean} the FILL WITH BOTS checkbox (creator's choice) */
+  getBotsEnabled() {
+    return this.el.menuBots.checked;
+  }
+
+  /**
+   * Small room line in the HUD ('ROOM: ABCD' / 'LOBBY'). Pass ''/null to hide
+   * (offline play).
+   * @param {string} room normalized room id from welcome
+   */
+  setRoom(room) {
+    if (!room) {
+      this.el.roomIndicator.classList.add('hidden');
+      this.el.roomIndicator.textContent = '';
+      return;
+    }
+    this.el.roomIndicator.textContent = room === 'LOBBY' ? 'LOBBY' : `ROOM: ${room}`;
+    this.el.roomIndicator.classList.remove('hidden');
   }
 
   /**
@@ -378,8 +426,9 @@ export class HUD {
   /** Arrow-key menu navigation; active only while a menu is visible. */
   _handleKeyDown(e) {
     if (!this._menuVisible || this._menuButtons.length === 0) return;
-    // Don't hijack typing in the callsign field.
+    // Don't hijack typing in the callsign/room fields.
     if (document.activeElement === this.el.menuName) return;
+    if (document.activeElement === this.el.menuRoom) return;
     switch (e.code) {
       case 'ArrowUp':
       case 'ArrowLeft':

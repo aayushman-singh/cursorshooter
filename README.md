@@ -22,10 +22,24 @@ change the port (`PORT=3000 npm start`).
 
 CURSOR SHOOTER now plays online: one Node server (`server/server.js`) serves
 the static client over HTTP and runs the authoritative match over WebSocket at
-`/ws`. Players are auto-balanced onto blue/red teams; bots fill each team up
-to 3 members and are simulated by the longest-connected player (the "host").
-The server owns hp, team scores (first to 20), respawns, and the win/restart
-flow. The wire protocol is documented in `server/protocol.md`.
+`/ws`. Players are auto-balanced onto blue/red teams; the server owns hp, team
+scores (first to 20), respawns, and the win/restart flow. The wire protocol is
+documented in `server/protocol.md`.
+
+### Rooms
+
+Matches happen in rooms. Leaving the room code empty puts you in the public
+**LOBBY** with whoever else is there; entering a code (letters/digits, up to 8
+chars) creates or joins a private room — share the code with friends, or send
+them a link with it prefilled: `https://<your-host>/?room=CODE`. Rooms are
+fully independent matches and are destroyed when the last player leaves.
+
+### Bots
+
+Bots fill each team up to 3 members and are simulated by the longest-connected
+player in the room (the "host"). The menu's **FILL WITH BOTS** toggle is the
+room creator's choice and sticks for the life of the room — later joiners see
+the room's setting in their welcome message.
 
 ## Deploy to Render
 

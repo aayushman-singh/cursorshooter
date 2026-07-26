@@ -8,7 +8,7 @@ import { PlayerController } from './game/player.js';
 import { WeaponSystem, createViewModel } from './game/weapons.js';
 import { BotManager } from './game/bots.js';
 import { HUD } from './game/hud.js';
-import { NetClient, teamToLocal, teamToProtocol } from './net/net.js';
+import { NetClient, teamToLocal, teamToProtocol, roomFromQuery } from './net/net.js';
 import { RemoteManager, prettifyBotId } from './net/remotes.js';
 
 /** Kills needed to win the match (ARCHITECTURE.md: first to 20). */
@@ -102,6 +102,8 @@ export function startGame() {
   let net = null;
   let isHost = true; // offline: we simulate all bots
   let botConfig = null; // last { blue, red } from the server
+  let roomId = ''; // normalized room from welcome ('' = offline)
+  let roomBots = true; // the room's actual bot setting (welcome.bots)
   let connecting = false;
   let netTimer = 0; // 12Hz stream accumulator
 
@@ -276,8 +278,10 @@ export function startGame() {
     shimOnlineDamage(proxy);
   }
 
-  /** Host: spawn/remove bots so each team fills to 3 members (server botConfig). */
+  /** Host: spawn/remove bots so each team fills to 3 members (server botConfig).
+   *  Rooms created with bots off always get an empty roster. */
   function applyBotConfig(cfg) {
+    if (!roomBots) cfg = { blue: 0, red: 0 };
     const roster = [];
     for (let i = 0; i < (cfg.blue || 0); i++) {
       roster.push({ id: `bot-blue-${i}`, name: `Blue Bot ${i}`, team: 'A' });
@@ -493,6 +497,8 @@ export function startGame() {
     player.team = teamToLocal(welcome.team);
     shimOnlineDamage(player);
     isHost = !!welcome.host;
+    roomId = welcome.room || 'LOBBY';
+    roomBots = welcome.bots !== false; // trust the room's setting, not our request
     scores.A = welcome.score ? welcome.score.blue : 0;
     scores.B = welcome.score ? welcome.score.red : 0;
     matchTime = 0;
@@ -513,6 +519,7 @@ export function startGame() {
     hud.setAmmo(player.weapon.ammo, player.weapon.reserveAmmo);
     hud.setReloading(false);
     hud.setMenuError('');
+    hud.setRoom(roomId);
     enterPlaying();
   }
 
@@ -520,13 +527,15 @@ export function startGame() {
     if (connecting) return;
     connecting = true;
     const name = hud.getPlayerName();
+    const room = hud.getRoomCode();
+    const bots = hud.getBotsEnabled();
     hud.setMenuError('Connecting…');
     const client = new NetClient();
     // Wire handlers BEFORE the welcome resolves so a botConfig/playerJoin
     // flushed immediately after welcome can never be missed.
     wireNet(client);
     try {
-      const welcome = await client.connect(name);
+      const welcome = await client.connect(name, { room, bots });
       setupOnline(client, welcome, name);
     } catch {
       client.close();
@@ -545,6 +554,8 @@ export function startGame() {
     mode = 'offline';
     isHost = true;
     botConfig = null;
+    roomId = '';
+    roomBots = true;
     remotes.clearAll();
     delete player.applyDamage; // drop the shim, restoring the prototype method
     player.id = 'player';
@@ -555,6 +566,7 @@ export function startGame() {
     prepareOfflineBots();
     resetMatch();
     hud.hideHUD();
+    hud.setRoom('');
     hud.showMenu('start', startMenuData());
     hud.setMenuError(errorMsg || '');
   }
@@ -613,9 +625,10 @@ export function startGame() {
     state = 'paused';
     input.exitPointerLock();
     if (mode === 'online') {
+      const where = roomId && roomId !== 'LOBBY' ? `Room ${roomId}` : 'Public lobby';
       hud.showMenu('pause', {
         title: 'PAUSED',
-        subtitle: `Score — Blue ${scores.A} : ${scores.B} Red`,
+        subtitle: `${where} · Score — Blue ${scores.A} : ${scores.B} Red`,
         hint: 'The match goes on without you — resume to keep fighting.',
         buttons: [
           { id: 'resume', label: 'RESUME' },
@@ -780,6 +793,7 @@ export function startGame() {
   prepareOfflineBots();
   assignCombatantHandlers(player);
   resetMatch(); // place everyone at spawns behind the start menu
+  hud.setRoomCode(roomFromQuery()); // ?room=CODE prefill (shareable links)
   hud.showMenu('start', startMenuData());
   requestAnimationFrame(frame);
 }
