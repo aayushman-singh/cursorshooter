@@ -1,0 +1,11 @@
+{
+  "name": "kimi-shooter",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser-based 3v3 first-person shooter with controller support and 5 AI bots (Three.js, no build step).",
+  "scripts": {
+    "start": "python3 -m http.server 8080",
+    "test": "node sim-test.mjs"
+  }
+}

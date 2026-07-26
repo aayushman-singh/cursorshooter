@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KIMI SHOOTER</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="css/style.css">
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js" } }
+</script>
+</head>
+<body>
+<div id="app">
+  <canvas id="game-canvas"></canvas>
+
+  <!-- In-game HUD -->
+  <div id="hud" class="hidden">
+    <div id="crosshair">
+      <span class="ch-line ch-t"></span><span class="ch-line ch-b"></span>
+      <span class="ch-line ch-l"></span><span class="ch-line ch-r"></span>
+      <span class="ch-dot"></span>
+    </div>
+    <div id="hitmarker" class="hidden">
+      <span class="hm-line hm-1"></span><span class="hm-line hm-2"></span>
+      <span class="hm-line hm-3"></span><span class="hm-line hm-4"></span>
+    </div>
+    <div id="damage-vignette"></div>
+
+    <div id="hud-bottom-left">
+      <div id="health-wrap">
+        <div id="health-bar"><div id="health-bar-fill"></div></div>
+        <div id="health-text">100</div>
+      </div>
+    </div>
+
+    <div id="hud-bottom-right">
+      <div id="reload-hint" class="hidden">RELOADING&hellip;</div>
+      <div id="ammo-wrap"><span id="ammo-mag">30</span><span id="ammo-sep">/</span><span id="ammo-reserve">&infin;</span></div>
+    </div>
+
+    <div id="hud-top-center">
+      <div id="score-wrap">
+        <span class="score-team team-a">BLUE</span><span id="score-a" class="team-a">0</span><span id="score-mid">:</span><span id="score-b" class="team-b">0</span><span class="score-team team-b">RED</span>
+      </div>
+      <div id="match-timer">0:00</div>
+    </div>
+
+    <div id="killfeed"></div>
+    <div id="center-message" class="hidden"></div>
+    <div id="gamepad-indicator" class="hidden">&#127918; Controller connected</div>
+  </div>
+
+  <!-- Full-screen menu overlay -->
+  <div id="menu">
+    <div id="menu-panel">
+      <h1 id="menu-title">KIMI SHOOTER</h1>
+      <p id="menu-subtitle"></p>
+      <div id="menu-buttons"></div>
+      <p id="menu-hint"></p>
+    </div>
+  </div>
+</div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
