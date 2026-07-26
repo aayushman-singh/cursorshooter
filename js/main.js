@@ -8,12 +8,16 @@ import { PlayerController } from './game/player.js';
 import { WeaponSystem, createViewModel } from './game/weapons.js';
 import { BotManager } from './game/bots.js';
 import { HUD } from './game/hud.js';
+import { NetClient, teamToLocal, teamToProtocol } from './net/net.js';
+import { RemoteManager, prettifyBotId } from './net/remotes.js';
 
 /** Kills needed to win the match (ARCHITECTURE.md: first to 20). */
 const WIN_KILLS = 20;
 /** Seconds before a dead combatant respawns. */
 const RESPAWN_TIME = 3;
-/** Bot roster: Alpha/Bravo on team A with the player, Viper/Rogue/Havoc on B. */
+/** Network send rate for state/bot streams (Hz). */
+const NET_HZ = 12;
+/** Offline bot roster: Alpha/Bravo on team A with the player, Viper/Rogue/Havoc on B. */
 const BOT_ROSTER = [
   { name: 'Alpha', team: 'A' },
   { name: 'Bravo', team: 'A' },
@@ -37,31 +41,24 @@ const SOUNDS = {
   step3: 'assets/sounds/step3.ogg',
 };
 
+/** Round to 2 decimals to keep state/bot payloads small. */
+const r2 = (v) => Math.round(v * 100) / 100;
+
 /**
- * Bootstrap + match orchestration (see ARCHITECTURE.md "Match flow"):
+ * Bootstrap + match orchestration (see ARCHITECTURE.md "Match flow"), now with
+ * two modes:
  *
- * - Construct: Engine(#game-canvas), InputManager(#game-canvas), PhysicsWorld,
- *   HUD(#app) + hud.wireInput(input), map via buildMap(scene, physics),
- *   PlayerController, WeaponSystem, BotManager.
- * - Teams: player + bots Alpha/Bravo = 'A'; bots Viper/Rogue/Havoc = 'B'.
- *   Every combatant gets weaponSystem.createWeapon(combatant) (bots get theirs
- *   inside BotManager) and onDeath/onDamaged handlers from here.
- * - Match state machine: 'start' | 'playing' | 'paused' | 'gameover'.
- *   start menu (Start button + controls subtitle) → pointer lock → playing.
- *   Esc/Start-button/pointer-lock loss → paused (Resume, Restart).
- *   Kill → killer's team +1, killfeed, hitmarker for the player's shots,
- *   damage flash when the player is hurt, respawn after 3s at a random
- *   own-team spawn. First team to 20 kills → gameover (VICTORY/DEFEAT,
- *   Play again → full reset).
- * - Loop: requestAnimationFrame; dt = clamp(elapsed, 0, 0.05); order:
- *   input.update → (playing ? player/bots/weapons updates + firing : nothing)
- *   → hud.update → engine.render.
- * - Player firing each frame from input state (fire held = auto fire) using
- *   player.getEyePosition()/getLookDirection(), viewModel.kick() + input.rumble
- *   on successful shots, weapon.reload() on 'reload' press, HUD ammo/health
- *   sync every frame, respawn countdown shown via setCenterMessage while dead.
- * - Expose nothing else; call startGame() on DOMContentLoaded (or immediately
- *   if the document is already parsed).
+ * - OFFLINE (original): player + 2 bot teammates vs 3 enemy bots, all damage
+ *   and scoring applied locally, first to 20 wins.
+ * - ONLINE (FIND MATCH): NetClient connects to ws(s)://<host>/ws. The local
+ *   player still simulates its own physics and streams {t:'state'} ~12Hz;
+ *   remote players render via RemoteManager from {t:'states'}; all damage is
+ *   claimed with {t:'hit'} and applied authoritatively by the server
+ *   ({t:'hp'}/{t:'dead'}/{t:'respawn'} drive HUD/death/respawn). The host
+ *   client runs the BotManager AI for the server's botConfig and streams
+ *   {t:'bots'} ~12Hz; non-host clients render bots from the relay instead.
+ *   Scores/end/restart come from the server. If the connect fails, the menu
+ *   shows an error and PLAY OFFLINE still works exactly like the original.
  */
 export function startGame() {
   const canvas = document.getElementById('game-canvas');
@@ -78,35 +75,39 @@ export function startGame() {
   const weaponSystem = new WeaponSystem(engine.scene, physics);
   const viewModel = createViewModel(engine.camera);
   const botManager = new BotManager(engine.scene, physics, mapData, weaponSystem);
-  botManager.spawnBots(BOT_ROSTER);
+  const remotes = new RemoteManager(engine.scene);
   player.weapon = weaponSystem.createWeapon(player);
-
-  const combatants = [player, ...botManager.bots];
 
   // --- Audio (CC0 Kenney sounds; unlocks on the first user gesture) ---------
   const audio = new AudioManager();
   audio.loadAll(SOUNDS);
-  // Enemy/teammate gunfire, attenuated by distance to the player.
-  for (const bot of botManager.bots) {
-    bot.weapon.onShot = (origin) => {
-      const d = origin.distanceTo(player.position);
-      audio.play('shootBot', { volume: 0.55 * Math.max(0, 1 - d / 55), jitter: 0.08 });
-    };
-  }
   /** Footstep cadence while the player moves on the ground. */
   let stepTimer = 0;
   let stepIdx = 0;
 
   // --- Match state ----------------------------------------------------------
   let state = 'start'; // 'start' | 'playing' | 'paused' | 'gameover'
-  const scores = { A: 0, B: 0 };
+  const scores = { A: 0, B: 0 }; // online: A = blue, B = red
   let matchTime = 0;
-  /** @type {{ combatant: object, t: number }[]} pending respawns */
+  /** @type {{ combatant: object, t: number }[]} pending respawns (offline) */
   const respawns = [];
+  /** @type {{ bot: object, t: number }[]} host-side bot respawns (online) */
+  const botRespawns = [];
+  /** Online self-death countdown (display only; the server respawns us). */
+  let selfRespawnTimer = 0;
 
-  for (const c of combatants) {
-    c.onDeath = (victim, killerId) => handleDeath(victim, killerId);
-    c.onDamaged = (amount, fromId) => handleDamaged(c, amount, fromId);
+  // --- Network state --------------------------------------------------------
+  let mode = 'offline'; // 'offline' | 'online'
+  /** @type {NetClient|null} */
+  let net = null;
+  let isHost = true; // offline: we simulate all bots
+  let botConfig = null; // last { blue, red } from the server
+  let connecting = false;
+  let netTimer = 0; // 12Hz stream accumulator
+
+  /** Everyone the local raycast/AI can hit: player + local bots + remote proxies. */
+  function getCombatants() {
+    return [player, ...botManager.bots, ...remotes.combatants];
   }
 
   // --- Spawning -------------------------------------------------------------
@@ -120,17 +121,65 @@ export function startGame() {
   function respawnCombatant(c) {
     const spawn = randomSpawn(c.team);
     if (c === player) {
-      player.spawnAt(spawn);
-      // Fresh mag on respawn (bots get the same inside respawnBot).
-      player.weapon.ammo = player.weapon.magSize;
-      player.weapon.isReloading = false;
-      player.weapon.cooldown = 0;
+      respawnPlayerLocal();
     } else {
       botManager.respawnBot(c, spawn);
     }
   }
 
-  // --- Combat callbacks -----------------------------------------------------
+  /** Local player at a fresh own-team spawn with a fresh mag. */
+  function respawnPlayerLocal() {
+    player.spawnAt(randomSpawn(player.team));
+    player.weapon.ammo = player.weapon.magSize;
+    player.weapon.isReloading = false;
+    player.weapon.cooldown = 0;
+  }
+
+  // --- Combatant wiring -------------------------------------------------------
+  function assignCombatantHandlers(c) {
+    c.onDeath = (victim, killerId) => {
+      if (mode === 'offline') handleDeath(victim, killerId);
+    };
+    c.onDamaged = (amount, fromId) => {
+      if (mode === 'offline') handleDamaged(c, amount, fromId);
+    };
+  }
+
+  /** Enemy/teammate gunfire, attenuated by distance to the player. */
+  function hookBotWeapon(bot) {
+    bot.weapon.onShot = (origin) => {
+      const d = origin.distanceTo(player.position);
+      audio.play('shootBot', { volume: 0.55 * Math.max(0, 1 - d / 55), jitter: 0.08 });
+      // Bot tracers stay local: the server's {t:'shoot'} relay always carries
+      // the sender's player id, so relayed bot shots would render at the host.
+    };
+  }
+
+  /**
+   * Online: the server applies all damage authoritatively, so a local raycast
+   * hit becomes a hit CLAIM instead of local health loss. fromId is the
+   * shooter: the local player (plain claim) or a host bot (from: botId).
+   */
+  function shimOnlineDamage(c) {
+    c.applyDamage = (amount, fromId) => {
+      if (!c.alive || !net) return;
+      net.sendHit(c.id, amount, fromId === player.id ? undefined : fromId);
+      if (fromId === player.id) {
+        // Non-lethal feedback now; lethal flashes red via the {t:'dead'} broadcast.
+        hud.showHitmarker(false);
+        audio.play('hit', { volume: 0.45, jitter: 0.05 });
+      }
+    };
+  }
+
+  function prepareOfflineBots() {
+    for (const bot of botManager.bots) {
+      assignCombatantHandlers(bot);
+      hookBotWeapon(bot);
+    }
+  }
+
+  // --- Combat callbacks (offline scoring; online comes from the server) ------
   function handleDamaged(victim, amount, fromId) {
     if (victim === player) {
       hud.showDamageFlash();
@@ -142,7 +191,7 @@ export function startGame() {
   }
 
   function handleDeath(victim, killerId) {
-    const killer = combatants.find((c) => c.id === killerId) || null;
+    const killer = getCombatants().find((c) => c.id === killerId) || null;
     const scored = killer && killer.team !== victim.team;
     if (scored) {
       scores[killer.team] += 1;
@@ -171,6 +220,7 @@ export function startGame() {
   }
 
   function updateRespawns(dt) {
+    // Offline respawns (original behavior).
     for (let i = respawns.length - 1; i >= 0; i--) {
       const r = respawns[i];
       r.t -= dt;
@@ -183,15 +233,356 @@ export function startGame() {
         respawnCombatant(r.combatant);
       }
     }
+    // Online host: respawn server-killed bots after 3s (streamed via {t:'bots'}).
+    for (let i = botRespawns.length - 1; i >= 0; i--) {
+      const r = botRespawns[i];
+      r.t -= dt;
+      if (r.t <= 0) {
+        botRespawns.splice(i, 1);
+        botManager.respawnBot(r.bot, randomSpawn(r.bot.team));
+      }
+    }
+    // Online self: countdown until the server's {t:'respawn'} arrives.
+    if (selfRespawnTimer > 0) {
+      selfRespawnTimer -= dt;
+      if (!player.alive && selfRespawnTimer > 0) {
+        hud.setCenterMessage(`RESPAWN IN ${Math.ceil(selfRespawnTimer)}`, selfRespawnTimer, '');
+      }
+    }
+  }
+
+  // --- Network: handlers ------------------------------------------------------
+  /** Display name for killfeed: roster → local bots → proxies → prettified id. */
+  function displayName(id) {
+    if (!id) return '?';
+    if (id === player.id) return player.name;
+    if (net) {
+      const info = net.players.get(id);
+      if (info) return info.name;
+    }
+    const bot = botManager.bots.find((b) => b.id === id);
+    if (bot) return bot.name;
+    const proxy = remotes.get(id);
+    if (proxy) return proxy.name;
+    return prettifyBotId(id);
+  }
+
+  function addRemotePlayer(p) {
+    const proxy = remotes.addPlayer({
+      id: p.id,
+      name: p.name || 'Player',
+      team: teamToLocal(p.team),
+    });
+    shimOnlineDamage(proxy);
+  }
+
+  /** Host: spawn/remove bots so each team fills to 3 members (server botConfig). */
+  function applyBotConfig(cfg) {
+    const roster = [];
+    for (let i = 0; i < (cfg.blue || 0); i++) {
+      roster.push({ id: `bot-blue-${i}`, name: `Blue Bot ${i}`, team: 'A' });
+    }
+    for (let i = 0; i < (cfg.red || 0); i++) {
+      roster.push({ id: `bot-red-${i}`, name: `Red Bot ${i}`, team: 'B' });
+    }
+    botManager.syncRoster(roster);
+    for (const bot of botManager.bots) {
+      if (!bot._netReady) {
+        bot._netReady = true;
+        assignCombatantHandlers(bot);
+        hookBotWeapon(bot);
+        shimOnlineDamage(bot);
+      }
+    }
+  }
+
+  function handleRemoteShoot(id) {
+    if (!id || id === player.id) return;
+    const m = remotes.getMuzzle(id);
+    if (!m) return;
+    weaponSystem.spawnRemoteShot(m.origin, m.dir);
+    const d = m.origin.distanceTo(player.position);
+    audio.play('shootBot', { volume: 0.55 * Math.max(0, 1 - d / 55), jitter: 0.08 });
+  }
+
+  function onHp(msg) {
+    if (msg.id === player.id) {
+      if (msg.hp < player.health) hud.showDamageFlash();
+      player.health = msg.hp;
+      return;
+    }
+    // Host reconciles its local bot state from server-authoritative hp.
+    const bot = botManager.bots.find((b) => b.id === msg.id);
+    if (bot) {
+      bot.health = msg.hp;
+      return;
+    }
+    remotes.setHp(msg.id, msg.hp);
+  }
+
+  function onDead(msg) {
+    const killerTeam = teamToLocal(msg.killerTeam);
+    const victimTeam = teamToLocal(msg.victimTeam);
+    if (killerTeam !== victimTeam) {
+      scores[killerTeam] += 1;
+      hud.setScore(scores.A, scores.B);
+    }
+    hud.addKillFeed({
+      killer: displayName(msg.killer),
+      victim: displayName(msg.victim),
+      killerTeam,
+      victimTeam,
+    });
+    if (msg.killer === player.id) {
+      hud.showHitmarker(true);
+      audio.play('hit', { volume: 0.8, rate: 0.7 }); // kill confirm
+    }
+    if (msg.victim === player.id) {
+      player.alive = false;
+      player.health = 0;
+      player.velocity.set(0, 0, 0);
+      selfRespawnTimer = RESPAWN_TIME;
+      input.rumble(0.6, 0.8, 200);
+      audio.play('death', { volume: 0.7 });
+      return;
+    }
+    const bot = isHost ? botManager.bots.find((b) => b.id === msg.victim) : null;
+    if (bot) {
+      bot.alive = false;
+      bot.health = 0;
+      bot.velocity.set(0, 0, 0);
+      bot.mesh.visible = false;
+      botRespawns.push({ bot, t: RESPAWN_TIME });
+      return;
+    }
+    remotes.markDead(msg.victim);
+  }
+
+  function onRespawn(msg) {
+    if (msg.id === player.id) {
+      selfRespawnTimer = 0;
+      hud.setCenterMessage('');
+      const p = msg.p || [0, 0, 0];
+      player.spawnAt({
+        position: new THREE.Vector3(p[0], p[1], p[2]),
+        yaw: mapData.spawnYaw[player.team],
+      });
+      player.weapon.ammo = player.weapon.magSize;
+      player.weapon.isReloading = false;
+      player.weapon.cooldown = 0;
+    } else {
+      remotes.markAlive(msg.id);
+    }
+  }
+
+  function onEnd(msg) {
+    state = 'gameover';
+    botRespawns.length = 0;
+    selfRespawnTimer = 0;
+    if (msg.score) {
+      scores.A = msg.score.blue;
+      scores.B = msg.score.red;
+    }
+    hud.setScore(scores.A, scores.B);
+    input.exitPointerLock();
+    hud.hideHUD();
+    const won = teamToLocal(msg.winner) === player.team;
+    audio.play(won ? 'win' : 'lose', { volume: 0.8 });
+    hud.showMenu('gameover', {
+      title: msg.winner === 'blue' ? 'BLUE TEAM WINS' : 'RED TEAM WINS',
+      subtitle: `Final score — Blue ${scores.A} : ${scores.B} Red`,
+      hint:
+        (won ? 'Your team dominated the arena.' : 'The enemy team took the arena.') +
+        '\nNext match starts shortly…',
+      buttons: [{ id: 'leave', label: 'LEAVE MATCH' }],
+    });
+  }
+
+  function onRestart(msg) {
+    scores.A = msg.score ? msg.score.blue : 0;
+    scores.B = msg.score ? msg.score.red : 0;
+    matchTime = 0;
+    respawns.length = 0;
+    botRespawns.length = 0;
+    selfRespawnTimer = 0;
+    // The HUD exposes no killfeed-clear API; its entries are the only children
+    // of #killfeed and self-expire otherwise, so removing them here is safe.
+    document.getElementById('killfeed').replaceChildren();
+    hud.setScore(scores.A, scores.B);
+    hud.setTimer(0);
+    hud.setCenterMessage('');
+    respawnPlayerLocal();
+    if (isHost) {
+      for (const bot of botManager.bots) botManager.respawnBot(bot, randomSpawn(bot.team));
+    }
+    remotes.resetAll();
+    hud.hideMenu();
+    hud.showHUD();
+    viewModel.setReloading(false);
+    viewModel.setVisible(true);
+    state = 'playing';
+    input.requestPointerLock();
+  }
+
+  function wireNet(client) {
+    client.on('playerJoin', (msg) => addRemotePlayer(msg.player));
+    client.on('playerLeave', (msg) => remotes.removePlayer(msg.id));
+    client.on('hostUpdate', (msg) => {
+      isHost = msg.host === player.id;
+      if (isHost) {
+        // We simulate now: drop the relayed bot proxies and apply the config.
+        remotes.clearBots();
+        if (botConfig) applyBotConfig(botConfig);
+      }
+    });
+    client.on('botConfig', (msg) => {
+      botConfig = { blue: msg.blue || 0, red: msg.red || 0 };
+      if (isHost) applyBotConfig(botConfig);
+    });
+    client.on('states', (msg) => remotes.applyStates(msg.players));
+    client.on('bots', (msg) => {
+      if (!isHost) remotes.applyBots(msg.bots);
+    });
+    client.on('shoot', (msg) => handleRemoteShoot(msg.id));
+    client.on('hp', onHp);
+    client.on('dead', onDead);
+    client.on('respawn', onRespawn);
+    client.on('end', onEnd);
+    client.on('restart', onRestart);
+    client.on('close', () => {
+      if (net === client) leaveToMenu('Connection lost.');
+    });
+  }
+
+  // --- Network: streams (~12Hz while the world runs) ---------------------------
+  function updateNetStreams(dt) {
+    if (mode !== 'online' || !net) return;
+    netTimer -= dt;
+    if (netTimer > 0) return;
+    netTimer = 1 / NET_HZ;
+
+    const s = input.getState();
+    net.sendState(
+      [r2(player.position.x), r2(player.position.y), r2(player.position.z)],
+      Math.round(player.yaw * 1000) / 1000,
+      Math.round(player.pitch * 1000) / 1000,
+      player.height < 1.4, // crouched (capsule below the stand/crouch midpoint)
+      player.alive && s.fire
+    );
+
+    if (isHost) {
+      net.sendBots(
+        botManager.bots.map((b) => ({
+          id: b.id,
+          team: teamToProtocol(b.team),
+          p: [r2(b.position.x), r2(b.position.y), r2(b.position.z)],
+          yaw: Math.round(b.yaw * 1000) / 1000,
+          hp: b.health,
+          alive: b.alive,
+        }))
+      );
+    }
+  }
+
+  // --- Network: connect / teardown ---------------------------------------------
+  function setupOnline(client, welcome, name) {
+    net = client;
+    mode = 'online';
+    player.id = welcome.id;
+    player.name = name;
+    player.team = teamToLocal(welcome.team);
+    shimOnlineDamage(player);
+    isHost = !!welcome.host;
+    scores.A = welcome.score ? welcome.score.blue : 0;
+    scores.B = welcome.score ? welcome.score.red : 0;
+    matchTime = 0;
+    respawns.length = 0;
+    botRespawns.length = 0;
+    selfRespawnTimer = 0;
+    botConfig = null;
+    botManager.despawnBots(); // offline menu-preview bots go away
+    remotes.clearAll();
+    for (const p of welcome.players || []) {
+      if (p.id !== player.id) addRemotePlayer(p);
+    }
+    document.getElementById('killfeed').replaceChildren();
+    hud.setScore(scores.A, scores.B);
+    hud.setTimer(0);
+    respawnPlayerLocal();
+    hud.setHealth(player.health);
+    hud.setAmmo(player.weapon.ammo, player.weapon.reserveAmmo);
+    hud.setReloading(false);
+    hud.setMenuError('');
+    enterPlaying();
+  }
+
+  async function findMatch() {
+    if (connecting) return;
+    connecting = true;
+    const name = hud.getPlayerName();
+    hud.setMenuError('Connecting…');
+    const client = new NetClient();
+    // Wire handlers BEFORE the welcome resolves so a botConfig/playerJoin
+    // flushed immediately after welcome can never be missed.
+    wireNet(client);
+    try {
+      const welcome = await client.connect(name);
+      setupOnline(client, welcome, name);
+    } catch {
+      client.close();
+      hud.setMenuError('No server found — try PLAY OFFLINE vs bots.');
+    }
+    connecting = false;
+  }
+
+  /** Drop back to the offline start menu (LEAVE MATCH / connection lost). */
+  function leaveToMenu(errorMsg) {
+    if (net) {
+      const client = net;
+      net = null; // null first so the async 'close' event is ignored
+      client.close();
+    }
+    mode = 'offline';
+    isHost = true;
+    botConfig = null;
+    remotes.clearAll();
+    delete player.applyDamage; // drop the shim, restoring the prototype method
+    player.id = 'player';
+    player.name = 'You';
+    player.team = 'A';
+    state = 'start';
+    botManager.spawnBots(BOT_ROSTER); // fresh, unshimmed offline preview bots
+    prepareOfflineBots();
+    resetMatch();
+    hud.hideHUD();
+    hud.showMenu('start', startMenuData());
+    hud.setMenuError(errorMsg || '');
   }
 
   // --- Reset / state transitions --------------------------------------------
+  function startMenuData() {
+    return {
+      title: 'CURSOR SHOOTER',
+      subtitle:
+        'Online 3v3 — first to 20 kills wins, bots fill empty slots.\n' +
+        'WASD move · Mouse look · LMB fire · RMB aim · Space jump · Ctrl crouch · ' +
+        'R reload · Shift sprint · Esc pause. Gamepad fully supported (B / R3 crouches).',
+      hint: 'Pick a callsign and FIND MATCH, or PLAY OFFLINE vs bots.',
+      buttons: [
+        { id: 'find', label: 'FIND MATCH' },
+        { id: 'offline', label: 'PLAY OFFLINE' },
+      ],
+    };
+  }
+
   function resetMatch() {
     scores.A = 0;
     scores.B = 0;
     matchTime = 0;
     respawns.length = 0;
-    for (const c of combatants) {
+    botRespawns.length = 0;
+    selfRespawnTimer = 0;
+    for (const c of getCombatants()) {
       const w = c.weapon;
       if (w) {
         w.ammo = w.magSize;
@@ -201,8 +592,6 @@ export function startGame() {
       }
       respawnCombatant(c);
     }
-    // The HUD exposes no killfeed-clear API; its entries are the only children
-    // of #killfeed and self-expire otherwise, so removing them here is safe.
     document.getElementById('killfeed').replaceChildren();
     hud.setScore(0, 0);
     hud.setTimer(0);
@@ -223,15 +612,27 @@ export function startGame() {
   function pauseGame() {
     state = 'paused';
     input.exitPointerLock();
-    hud.showMenu('pause', {
-      title: 'PAUSED',
-      subtitle: `Score — Blue ${scores.A} : ${scores.B} Red`,
-      hint: 'Resume to keep fighting, or Restart for a fresh match.',
-      buttons: [
-        { id: 'resume', label: 'RESUME' },
-        { id: 'restart', label: 'RESTART' },
-      ],
-    });
+    if (mode === 'online') {
+      hud.showMenu('pause', {
+        title: 'PAUSED',
+        subtitle: `Score — Blue ${scores.A} : ${scores.B} Red`,
+        hint: 'The match goes on without you — resume to keep fighting.',
+        buttons: [
+          { id: 'resume', label: 'RESUME' },
+          { id: 'leave', label: 'LEAVE MATCH' },
+        ],
+      });
+    } else {
+      hud.showMenu('pause', {
+        title: 'PAUSED',
+        subtitle: `Score — Blue ${scores.A} : ${scores.B} Red`,
+        hint: 'Resume to keep fighting, or Restart for a fresh match.',
+        buttons: [
+          { id: 'resume', label: 'RESUME' },
+          { id: 'restart', label: 'RESTART' },
+        ],
+      });
+    }
   }
 
   function resumeGame() {
@@ -259,12 +660,16 @@ export function startGame() {
   hud.onMenuAction((id) => {
     audio.unlock();
     audio.play('click', { volume: 0.5 });
-    if (state === 'start' && id === 'start') {
+    if (state === 'start' && id === 'find') {
+      findMatch();
+    } else if (state === 'start' && id === 'offline') {
       resetMatch();
       enterPlaying();
     } else if (state === 'paused' && id === 'resume') {
       resumeGame();
-    } else if ((state === 'paused' || state === 'gameover') && id === 'restart') {
+    } else if (id === 'leave' && mode === 'online') {
+      leaveToMenu();
+    } else if (mode === 'offline' && (state === 'paused' || state === 'gameover') && id === 'restart') {
       resetMatch();
       enterPlaying();
     }
@@ -290,12 +695,13 @@ export function startGame() {
         const shot = player.weapon.tryFire(
           player.getEyePosition(),
           player.getLookDirection(),
-          combatants
+          getCombatants()
         );
         if (shot) {
           viewModel.kick();
           input.rumble(0.25, 0.45, 60);
           audio.play('shoot', { volume: 0.5, jitter: 0.06 });
+          if (mode === 'online' && net) net.sendShoot();
         }
       }
       if (input.wasPressed('reload')) {
@@ -348,12 +754,20 @@ export function startGame() {
     if (state === 'playing') {
       matchTime += dt;
       player.update(dt);
-      botManager.update(dt, combatants);
       player.weapon.update(dt);
-      weaponSystem.update(dt);
-      updateRespawns(dt);
       updatePlayerCombat(dt);
       syncHud();
+    }
+
+    // World simulation: full speed while playing; online the world keeps
+    // running behind the pause/gameover menus (remote players don't freeze).
+    if (state === 'playing' || (mode === 'online' && state !== 'start')) {
+      const combatants = getCombatants();
+      if (isHost) botManager.update(dt, combatants);
+      weaponSystem.update(dt);
+      remotes.update(dt);
+      updateRespawns(dt);
+      updateNetStreams(dt);
     }
 
     hud.setGamepadConnected(input.isGamepadConnected());
@@ -362,16 +776,11 @@ export function startGame() {
   }
 
   // --- Boot ----------------------------------------------------------------------
+  botManager.spawnBots(BOT_ROSTER); // menu-preview bots (also the offline roster)
+  prepareOfflineBots();
+  assignCombatantHandlers(player);
   resetMatch(); // place everyone at spawns behind the start menu
-  hud.showMenu('start', {
-    title: 'KIMI SHOOTER',
-    subtitle:
-      'Blue team (you + 2 bots) vs Red team (3 bots) — first to 20 kills wins. ' +
-      'WASD move · Mouse look · LMB fire · RMB aim · Space jump · Ctrl crouch · ' +
-      'R reload · Shift sprint · Esc pause. Gamepad fully supported (B / R3 crouches).',
-    hint: 'Click START, or press Enter / gamepad A.',
-    buttons: [{ id: 'start', label: 'START MATCH' }],
-  });
+  hud.showMenu('start', startMenuData());
   requestAnimationFrame(frame);
 }
 

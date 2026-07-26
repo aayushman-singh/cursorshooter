@@ -49,6 +49,8 @@ export class HUD {
       menuSubtitle: $('#menu-subtitle'),
       menuButtons: $('#menu-buttons'),
       menuHint: $('#menu-hint'),
+      menuName: $('#menu-name'),
+      menuError: $('#menu-error'),
     };
 
     /** @type {import('../engine/input.js').InputManager|null} */
@@ -250,6 +252,31 @@ export class HUD {
     this._applyFocus();
     this._menuVisible = true;
     menu.classList.remove('hidden');
+
+    // The callsign field + error line only belong on the start screen.
+    const isStart = screen === 'start';
+    this.el.menuName.classList.toggle('hidden', !isStart);
+    this.el.menuError.classList.toggle('hidden', !isStart || !this.el.menuError.textContent);
+  }
+
+  /**
+   * Sanitized callsign from #menu-name (≤12 chars, default 'Player').
+   * @returns {string}
+   */
+  getPlayerName() {
+    const raw = this.el.menuName.value.replace(/[^\w \-]/g, '').trim().slice(0, 12);
+    return raw || 'Player';
+  }
+
+  /**
+   * Status/error line on the start menu ('Connecting…', failures). Pass an
+   * empty string to clear; only visible while the start menu is up.
+   * @param {string} text
+   */
+  setMenuError(text) {
+    this.el.menuError.textContent = text || '';
+    const show = this._menuScreen === 'start' && !!text;
+    this.el.menuError.classList.toggle('hidden', !show);
   }
 
   /** Hide the menu overlay. */
@@ -351,6 +378,8 @@ export class HUD {
   /** Arrow-key menu navigation; active only while a menu is visible. */
   _handleKeyDown(e) {
     if (!this._menuVisible || this._menuButtons.length === 0) return;
+    // Don't hijack typing in the callsign field.
+    if (document.activeElement === this.el.menuName) return;
     switch (e.code) {
       case 'ArrowUp':
       case 'ArrowLeft':

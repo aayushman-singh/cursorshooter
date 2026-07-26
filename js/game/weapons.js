@@ -152,6 +152,31 @@ export class WeaponSystem {
 
   /* ---------------- internal effect spawners (used by Weapon) ---------------- */
 
+  /**
+   * Visual-only shot for a remote (networked) combatant: tracer, muzzle
+   * flash, and world impact effects — but no spread, ammo, or damage.
+   * Called from main.js on {t:'shoot'} relays.
+   * @param {THREE.Vector3} origin muzzle/eye position
+   * @param {THREE.Vector3} direction normalized aim direction
+   * @param {number} [range] max tracer length when nothing is hit
+   */
+  spawnRemoteShot(origin, direction, range = 120) {
+    _dir.copy(direction).normalize();
+    const worldHit = this.physics.raycastWorld(origin, _dir, range);
+    if (worldHit) {
+      _p.copy(worldHit.point);
+      this._spawnSparks(_p, worldHit.normal, 4, 0xffa63d);
+    } else {
+      _p.copy(origin).addScaledVector(_dir, range);
+    }
+    const dist = _p.distanceTo(origin);
+    _n.copy(origin).addScaledVector(_dir, Math.min(0.35, dist * 0.5));
+    this._spawnTracer(_n, _p);
+    _n.copy(origin).addScaledVector(_dir, Math.min(0.55, dist * 0.5));
+    _n.y -= 0.12; // reads as gun-level rather than eye-level
+    this._spawnFlash(_n, 0.28, 0xffc766, 0.045);
+  }
+
   /** Round-robin reuse: the oldest effect is recycled when the pool is saturated. */
   _spawnTracer(from, to) {
     const t = this._tracers[this._tracerIdx];

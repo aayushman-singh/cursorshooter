@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: cursor-shooter
+    runtime: node
+    buildCommand: npm install
+    startCommand: node server/server.js

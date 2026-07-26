@@ -3,8 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>KIMI SHOOTER</title>
-<link rel="icon" href="data:,">
+<title>CURSOR SHOOTER</title>
+<link rel="icon" href="assets/brand/favicon.ico" sizes="any">
+<link rel="icon" href="assets/brand/cursor-light.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/style.css">
 <script type="importmap">
 { "imports": { "three": "./vendor/three.module.js" } }
@@ -41,6 +45,7 @@
 
     <div id="hud-top-center">
       <div id="score-wrap">
+        <img class="hud-cube" src="assets/brand/cursor-light.svg" width="14" height="14" alt="">
         <span class="score-team team-a">BLUE</span><span id="score-a" class="team-a">0</span><span id="score-mid">:</span><span id="score-b" class="team-b">0</span><span class="score-team team-b">RED</span>
       </div>
       <div id="match-timer">0:00</div>
@@ -48,16 +53,36 @@
 
     <div id="killfeed"></div>
     <div id="center-message" class="hidden"></div>
-    <div id="gamepad-indicator" class="hidden">&#127918; Controller connected</div>
+    <div id="gamepad-indicator" class="hidden">Controller connected</div>
   </div>
 
   <!-- Full-screen menu overlay -->
   <div id="menu">
+    <div id="menu-watermark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd">
+        <path d="M22.106 5.68L12.5.135a.998.998 0 00-.998 0L1.893 5.68a.84.84 0 00-.419.726v11.186c0 .3.16.577.42.727l9.607 5.547a.999.999 0 00.998 0l9.608-5.547a.84.84 0 00.42-.727V6.407a.84.84 0 00-.42-.726zm-.603 1.176L12.228 22.92c-.063.108-.228.064-.228-.061V12.34a.59.59 0 00-.295-.51l-9.11-5.26c-.107-.062-.063-.228.062-.228h18.55c.264 0 .428.286.296.514z"/>
+      </svg>
+    </div>
     <div id="menu-panel">
-      <h1 id="menu-title">KIMI SHOOTER</h1>
+      <div id="menu-brand">
+        <svg class="cursor-logo" viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd" aria-hidden="true">
+          <path d="M22.106 5.68L12.5.135a.998.998 0 00-.998 0L1.893 5.68a.84.84 0 00-.419.726v11.186c0 .3.16.577.42.727l9.607 5.547a.999.999 0 00.998 0l9.608-5.547a.84.84 0 00.42-.727V6.407a.84.84 0 00-.42-.726zm-.603 1.176L12.228 22.92c-.063.108-.228.064-.228-.061V12.34a.59.59 0 00-.295-.51l-9.11-5.26c-.107-.062-.063-.228.062-.228h18.55c.264 0 .428.286.296.514z"/>
+        </svg>
+        <span class="menu-brand-word">CURSOR</span>
+      </div>
+      <h1 id="menu-title">CURSOR SHOOTER</h1>
+      <p id="menu-tagline">A Cursor hackathon FPS</p>
       <p id="menu-subtitle"></p>
+      <input id="menu-name" class="hidden" type="text" maxlength="12" placeholder="Enter your callsign" autocomplete="off" spellcheck="false">
       <div id="menu-buttons"></div>
+      <p id="menu-error" class="hidden"></p>
       <p id="menu-hint"></p>
+      <div id="menu-footer">
+        <svg class="menu-footer-cube" viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd" aria-hidden="true">
+          <path d="M22.106 5.68L12.5.135a.998.998 0 00-.998 0L1.893 5.68a.84.84 0 00-.419.726v11.186c0 .3.16.577.42.727l9.607 5.547a.999.999 0 00.998 0l9.608-5.547a.84.84 0 00.42-.727V6.407a.84.84 0 00-.42-.726zm-.603 1.176L12.228 22.92c-.063.108-.228.064-.228-.061V12.34a.59.59 0 00-.295-.51l-9.11-5.26c-.107-.062-.063-.228.062-.228h18.55c.264 0 .428.286.296.514z"/>
+        </svg>
+        <span>Built with Cursor</span>
+      </div>
     </div>
   </div>
 </div>

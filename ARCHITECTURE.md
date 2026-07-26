@@ -1,4 +1,4 @@
-# ARCHITECTURE.md — KIMI SHOOTER (module contract)
+# ARCHITECTURE.md — CURSOR SHOOTER (module contract)
 
 Browser FPS: **player + 2 bot teammates (team A, blue) vs 3 enemy bots (team B, red)**.
 First team to **20 kills** wins. Respawn after 3s. Vanilla ES modules + Three.js r160

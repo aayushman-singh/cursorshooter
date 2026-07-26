@@ -1,4 +1,4 @@
-# KIMI SHOOTER
+# CURSOR SHOOTER
 
 A 3D first-person shooter that runs entirely in the browser: **you + 2 AI teammates
 (blue team) vs 3 AI enemies (red team)**. First team to **20 kills** wins.

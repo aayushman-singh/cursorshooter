@@ -1,4 +1,4 @@
-# KIMI SHOOTER
+# CURSOR SHOOTER
 
 A 3D first-person shooter that runs entirely in the browser: **you + 2 AI teammates
 (blue team) vs 3 AI enemies (red team)**. First team to **20 kills** wins.
@@ -9,13 +9,35 @@ sound effects. No build step, no runtime dependencies — just static files
 ## Run
 
 ```bash
-cd /workspace/proj/devvid
-python3 -m http.server 8080     # or: npm start
+npm install     # one-time: installs the 'ws' WebSocket package
+npm start       # node server/server.js — serves the client + /ws on :8080
 ```
 
 Open <http://localhost:8080> in a modern browser (Chrome/Edge/Firefox), click
 **START MATCH**. A gamepad connected before or during play is picked up
-automatically (indicator appears at the bottom of the HUD).
+automatically (indicator appears at the bottom of the HUD). Set `PORT` to
+change the port (`PORT=3000 npm start`).
+
+## Multiplayer
+
+CURSOR SHOOTER now plays online: one Node server (`server/server.js`) serves
+the static client over HTTP and runs the authoritative match over WebSocket at
+`/ws`. Players are auto-balanced onto blue/red teams; bots fill each team up
+to 3 members and are simulated by the longest-connected player (the "host").
+The server owns hp, team scores (first to 20), respawns, and the win/restart
+flow. The wire protocol is documented in `server/protocol.md`.
+
+## Deploy to Render
+
+The repo ships a `render.yaml` blueprint: one web service, Node runtime,
+`npm install` build, `node server/server.js` start. Either:
+
+- **Blueprint**: Render dashboard → New → Blueprint → point at this repo, or
+- **Manual**: New → Web Service → Node runtime, build command `npm install`,
+  start command `node server/server.js`.
+
+Render sets `PORT` automatically; WebSocket traffic on `/ws` works out of the
+box on the same URL as the site.
 
 ## Controls
 
@@ -59,6 +81,8 @@ js/game/weapons.js    hitscan rifle, tracers, view model
 js/game/bots.js       5 AI bots (patrol / engage / strafe / reload)
 js/game/hud.js        HUD + menus
 js/main.js            bootstrap, game loop, match state machine
+server/server.js      multiplayer server (static files + authoritative /ws match)
+server/protocol.md    client/server WebSocket protocol
 ARCHITECTURE.md       module contract the code was built against
 ```
 

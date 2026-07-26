@@ -42,7 +42,7 @@ function dirToYaw(dx, dz) {
  * the facing direction) + a small gun box. The group faces -Z at yaw 0, so
  * `group.rotation.y = bot.yaw` matches the (dx, dz) → yaw convention above.
  */
-function buildBotMesh(team) {
+export function buildBotMesh(team) {
   const group = new THREE.Group();
   const teamMat = new THREE.MeshLambertMaterial({ color: TEAM_COLORS[team] ?? 0x888888 });
   const darkMat = new THREE.MeshLambertMaterial({ color: 0x1c1e22 });
@@ -89,70 +89,108 @@ export class BotManager {
   /**
    * Create the bots and their meshes at sensible initial positions
    * (any own-team spawn point). Does NOT assign spawn ownership — main.js
-   * may immediately reposition via respawnBot.
-   * @param {{ name: string, team: 'A'|'B' }[]} roster
+   * may immediately reposition via respawnBot. Roster entries may carry an
+   * explicit `id` (online mode: 'bot-blue-0'…), otherwise ids are 'bot-N'.
+   * @param {{ name: string, team: 'A'|'B', id?: string }[]} roster
    * @returns {object[]} this.bots
    */
   spawnBots(roster) {
-    this.bots = roster.map((entry, i) => {
-      const bot = {
-        // --- Combatant interface ---
-        id: `bot-${i + 1}`,
-        name: entry.name,
-        team: entry.team,
-        isBot: true,
-        alive: true,
-        health: 100,
-        maxHealth: 100,
-        position: new THREE.Vector3(),
-        velocity: new THREE.Vector3(),
-        radius: 0.4,
-        height: 1.8,
-        eyeHeight: 1.6,
-        weapon: null,      // set below (created here via weaponSystem)
-        onDeath: () => {}, // assigned by main.js
-        onDamaged: () => {},
-        applyDamage: null, // set below (needs the closed-over bot object)
-        // --- bot-only state ---
-        yaw: 0,
-        mesh: buildBotMesh(entry.team),
-        target: null,
-        losTimer: 0,
-        reactTimer: 0,
-        reaimTimer: 0,
-        aimErrX: 0,
-        aimErrY: 0,
-        waypoint: null,
-        strafeSign: Math.random() < 0.5 ? -1 : 1,
-        strafeTimer: 1,
-      };
+    this.despawnBots();
+    this.bots = roster.map((entry, i) => this._createBot(entry, i));
+    return this.bots;
+  }
 
-      bot.applyDamage = (amount, fromId) => {
-        if (!bot.alive) return;
-        bot.health = Math.max(0, bot.health - amount);
-        bot.onDamaged(amount, fromId);
-        if (bot.health <= 0) {
-          bot.alive = false;
-          bot.velocity.set(0, 0, 0);
-          bot.mesh.visible = false;
-          bot.onDeath(bot, fromId);
-        }
-      };
+  /** Remove every bot's mesh from the scene and clear the roster. */
+  despawnBots() {
+    for (const bot of this.bots) this.scene.remove(bot.mesh);
+    this.bots = [];
+  }
 
-      bot.weapon = this.weaponSystem.createWeapon(bot);
-
-      // Sensible initial placement; main.js may immediately reposition.
-      const spawns = this.mapData.spawnPoints[bot.team];
-      const spawnPos = spawns.length > 0 ? spawns[i % spawns.length] : new THREE.Vector3();
-      bot.position.copy(spawnPos);
-      bot.yaw = this.mapData.spawnYaw[bot.team] || 0;
-      bot.mesh.position.copy(bot.position);
-      bot.mesh.rotation.y = bot.yaw;
-      this.scene.add(bot.mesh);
-
-      return bot;
+  /**
+   * Online host: reconcile the live bot set with a desired roster (from the
+   * server's botConfig). Existing bots with matching ids are kept untouched;
+   * extras are removed, missing ones are created.
+   * @param {{ name: string, team: 'A'|'B', id: string }[]} roster
+   * @returns {object[]} this.bots
+   */
+  syncRoster(roster) {
+    const wanted = new Set(roster.map((e) => e.id));
+    for (let i = this.bots.length - 1; i >= 0; i--) {
+      if (!wanted.has(this.bots[i].id)) {
+        this.scene.remove(this.bots[i].mesh);
+        this.bots.splice(i, 1);
+      }
+    }
+    roster.forEach((entry, i) => {
+      if (!this.bots.some((b) => b.id === entry.id)) {
+        this.bots.push(this._createBot(entry, i));
+      }
     });
     return this.bots;
+  }
+
+  /**
+   * Build one bot Combatant (mesh + weapon + AI state) and add it to the scene.
+   * @param {{ name: string, team: 'A'|'B', id?: string }} entry
+   * @param {number} i roster index (fallback id + initial spawn pick)
+   */
+  _createBot(entry, i) {
+    const bot = {
+      // --- Combatant interface ---
+      id: entry.id || `bot-${i + 1}`,
+      name: entry.name,
+      team: entry.team,
+      isBot: true,
+      alive: true,
+      health: 100,
+      maxHealth: 100,
+      position: new THREE.Vector3(),
+      velocity: new THREE.Vector3(),
+      radius: 0.4,
+      height: 1.8,
+      eyeHeight: 1.6,
+      weapon: null,      // set below (created here via weaponSystem)
+      onDeath: () => {}, // assigned by main.js
+      onDamaged: () => {},
+      applyDamage: null, // set below (needs the closed-over bot object)
+      // --- bot-only state ---
+      yaw: 0,
+      mesh: buildBotMesh(entry.team),
+      target: null,
+      losTimer: 0,
+      reactTimer: 0,
+      reaimTimer: 0,
+      aimErrX: 0,
+      aimErrY: 0,
+      waypoint: null,
+      strafeSign: Math.random() < 0.5 ? -1 : 1,
+      strafeTimer: 1,
+    };
+
+    bot.applyDamage = (amount, fromId) => {
+      if (!bot.alive) return;
+      bot.health = Math.max(0, bot.health - amount);
+      bot.onDamaged(amount, fromId);
+      if (bot.health <= 0) {
+        bot.alive = false;
+        bot.velocity.set(0, 0, 0);
+        bot.mesh.visible = false;
+        bot.onDeath(bot, fromId);
+      }
+    };
+
+    bot.weapon = this.weaponSystem.createWeapon(bot);
+
+    // Sensible initial placement; main.js may immediately reposition.
+    const spawns = this.mapData.spawnPoints[bot.team];
+    const spawnPos = spawns.length > 0 ? spawns[i % spawns.length] : new THREE.Vector3();
+    bot.position.copy(spawnPos);
+    bot.yaw = this.mapData.spawnYaw[bot.team] || 0;
+    bot.mesh.position.copy(bot.position);
+    bot.mesh.rotation.y = bot.yaw;
+    this.scene.add(bot.mesh);
+
+    return bot;
   }
 
   /**
